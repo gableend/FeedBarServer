@@ -1,6 +1,5 @@
-import { Handler } from '@netlify/functions';
-import { supabase } from '../../src/supabase';
-import { getBestIcon } from '../../src/icons';
+import axios from 'axios';
+import * as cheerio from 'cheerio';
 
 export const handler: Handler = async (event) => {
     // 1. Get ONLY the first 10 feeds missing icons
