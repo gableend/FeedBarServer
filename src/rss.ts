@@ -1,60 +1,54 @@
 import Parser from 'rss-parser';
+import axios from 'axios';
+import * as cheerio from 'cheerio';
 
-// 1. Extend the Parser types so TypeScript stops complaining
-type CustomItem = { 
-    author?: string; 
-    creator?: string; 
-    mediaContent?: { $: { url: string } };
-    mediaThumbnail?: { $: { url: string } };
-    itemImage?: { url: string };
-    contentEncoded?: string;
-};
-type CustomFeed = {};
+// ... (keep your existing CustomItem types and parser config) ...
 
-const parser: Parser<CustomFeed, CustomItem> = new Parser({
-    timeout: 5000,
-    headers: { 'User-Agent': 'FeedBar-Server/1.0 (+https://feedbar.app)' },
-    customFields: {
-        item: [
-            ['media:content', 'mediaContent'],
-            ['media:thumbnail', 'mediaThumbnail'],
-            ['image', 'itemImage'],
-            ['content:encoded', 'contentEncoded'],
-            ['author', 'author'] // Ensure author is explicitly mapped
-        ],
+async function getOGImage(url: string): Promise<string | null> {
+    try {
+        const { data } = await axios.get(url, { 
+            timeout: 3000, // Stay fast! 
+            headers: { 'User-Agent': 'FeedBar-Server/1.0' } 
+        });
+        const $ = cheerio.load(data);
+        return $('meta[property="og:image"]').attr('content') || 
+               $('meta[name="twitter:image"]').attr('content') || 
+               null;
+    } catch {
+        return null;
     }
-});
-
-export interface CleanItem {
-    title: string;
-    url: string;
-    published_at: Date;
-    author: string | null;
-    summary: string | null;
-    image_url: string | null;
 }
 
 export async function fetchFeed(url: string): Promise<CleanItem[] | null> {
     try {
         const feed = await parser.parseURL(url);
         
-        return feed.items.map(item => {
-            // Logic for image extraction
+        // Use a loop to handle potential async OG fetching
+        const cleanedItems: CleanItem[] = [];
+
+        for (const item of feed.items) {
             let image = item.enclosure?.url || null;
             if (!image && item.mediaContent) image = item.mediaContent.$.url;
             if (!image && item.mediaThumbnail) image = item.mediaThumbnail.$.url;
-            if (!image && item.itemImage) image = item.itemImage.url;
+            
+            // --- THE NEW LOGIC ---
+            // If still no image, try the "Deep Lane" scraper
+            if (!image && item.link) {
+                // Note: This adds latency. We only do this if strictly necessary.
+                image = await getOGImage(item.link);
+            }
 
-            return {
+            cleanedItems.push({
                 title: item.title || 'Untitled',
                 url: item.link || '',
                 published_at: item.isoDate ? new Date(item.isoDate) : new Date(),
-                // Now TypeScript knows these might exist
                 author: item.creator || item.author || null,
                 summary: item.contentSnippet || item.content || item.contentEncoded || null,
                 image_url: image
-            };
-        }).filter(i => i.url !== '');
+            });
+        }
+        
+        return cleanedItems.filter(i => i.url !== '');
     } catch (e) {
         console.error(`RSS Fail [${url}]:`, e);
         return null;

@@ -5,52 +5,52 @@ import { fetchFeed } from '../../src/rss';
 const handler = schedule('*/10 * * * *', async (event) => {
     console.log("⚡️ Ingest started...");
     
-    // 1. Get Active Feeds
+    // 1. Get Active Feeds (Order by last_fetched_at to rotate priority)
     const { data: feeds } = await supabase
         .from('feeds')
         .select('id, url')
-        .eq('is_active', true);
+        .eq('is_active', true)
+        .order('last_fetched_at', { ascending: true });
         
     if (!feeds?.length) return { statusCode: 200 };
 
-    // 2. Fetch & Update DB
-    await Promise.allSettled(feeds.map(async (feed) => {
-        const items = await fetchFeed(feed.url);
-        if (!items?.length) return;
-
-        const rows = items.map(i => {
-            // --- DEEP IMAGE EXTRACTION ---
-            // If the parser missed the image, we try to find it in the summary/content
-            let finalImageUrl = i.image_url;
+    // 2. Fetch & Update DB - SEQUENTIAL WRAPPER
+    // We loop through instead of using Promise.all to respect Netlify's execution limits
+    for (const feed of feeds) {
+        try {
+            console.log(`Processing: ${feed.url}`);
+            const items = await fetchFeed(feed.url);
             
-            if (!finalImageUrl && i.summary) {
-                // Look for the first <img> tag in the HTML content
-                const imgMatch = i.summary.match(/<img[^>]+src="([^">]+)"/);
-                if (imgMatch && imgMatch[1]) {
-                    finalImageUrl = imgMatch[1];
-                }
+            if (items && items.length > 0) {
+                const rows = items.map(i => ({
+                    feed_id: feed.id,
+                    title: i.title,
+                    url: i.url,
+                    published_at: i.published_at.toISOString(),
+                    author: i.author,
+                    // Clean HTML summary
+                    summary: i.summary?.replace(/<[^>]*>?/gm, '').substring(0, 200),
+                    image_url: i.image_url
+                }));
+
+                // Upsert to DB
+                await supabase.from('items').upsert(rows, { 
+                    onConflict: 'url', 
+                    ignoreDuplicates: true 
+                });
             }
 
-            return {
-                feed_id: feed.id,
-                title: i.title,
-                url: i.url,
-                published_at: i.published_at.toISOString(),
-                author: i.author,
-                summary: i.summary?.replace(/<[^>]*>?/gm, '').substring(0, 200), // Clean HTML from summary
-                image_url: finalImageUrl
-            };
-        });
+            // Update timestamp even if fetch fails to keep rotation moving
+            await supabase.from('feeds')
+                .update({ last_fetched_at: new Date().toISOString() })
+                .eq('id', feed.id);
 
-        // Upsert (Insert if new, ignore if exists based on URL)
-        await supabase.from('items').upsert(rows, { onConflict: 'url', ignoreDuplicates: true });
-        
-        // Update timestamp
-        await supabase.from('feeds').update({ last_fetched_at: new Date() }).eq('id', feed.id);
-    }));
+        } catch (err) {
+            console.error(`Failed to ingest ${feed.url}:`, err);
+        }
+    }
 
-    // 3. AUTO-CLEANUP (Keep the DB lean)
-    // Deletes items older than 3 days so the 'manifest' function stays lightning fast
+    // 3. AUTO-CLEANUP
     const threeDaysAgo = new Date();
     threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
     
