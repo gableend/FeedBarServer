@@ -1,7 +1,14 @@
 [build]
   command = "npm run build"
-  publish = "dist"      # This is where your compiled files go
-  functions = "dist/netlify/functions" # This tells Netlify: "Look here for the actual functions"
+  publish = "dist"
+  functions = "dist/netlify/functions"
 
 [functions]
   node_bundler = "esbuild"
+
+# This schedules your ingest to run every 10 minutes
+[functions."ingest"]
+  schedule = "*/10 * * * *"
+
+[[plugins]]
+  package = "@netlify/plugin-functions-core"
