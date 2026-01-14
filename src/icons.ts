@@ -1,31 +1,52 @@
-import { FaviconExtractor } from "@iocium/favicon-extractor";
+import axios from 'axios';
+import * as cheerio from 'cheerio';
 
 export async function getBestIcon(siteUrl: string): Promise<string | null> {
     try {
-        const extractor = new FaviconExtractor();
-        // The library returns string[] (Array of URLs)
-        const icons: string[] = await extractor.fetchAndExtract(siteUrl);
+        const domain = new URL(siteUrl).origin;
         
-        if (!icons || icons.length === 0) {
-            const domain = new URL(siteUrl).origin;
-            return `${domain}/favicon.ico`;
+        // 1. Fetch the HTML with a 5s timeout and a real User-Agent
+        const response = await axios.get(domain, {
+            timeout: 5000,
+            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) FeedBar/1.0' }
+        });
+
+        const $ = cheerio.load(response.data);
+        let iconUrl: string | null = null;
+
+        // 2. Prioritize Apple Touch Icon (your high-res preference)
+        const appleIcon = $('link[rel="apple-touch-icon"]').attr('href') || 
+                          $('link[rel="apple-touch-icon-precomposed"]').attr('href');
+        
+        if (appleIcon) iconUrl = appleIcon;
+
+        // 3. Fallback to shortcut icon / icon
+        if (!iconUrl) {
+            iconUrl = $('link[rel="icon"]').attr('href') || 
+                      $('link[rel="shortcut icon"]').attr('href');
         }
 
-        // 1. Prioritize Apple Touch Icons (usually high-res)
-        const appleIcon = icons.find(url => 
-            url.toLowerCase().includes('apple-touch-icon') || 
-            url.toLowerCase().includes('atouch')
-        );
-        if (appleIcon) return appleIcon;
+        // 4. Resolve relative URLs (e.g., "/favicon.png" -> "https://site.com/favicon.png")
+        if (iconUrl) {
+            if (iconUrl.startsWith('//')) {
+                iconUrl = 'https:' + iconUrl;
+            } else if (iconUrl.startsWith('/')) {
+                iconUrl = domain + iconUrl;
+            } else if (!iconUrl.startsWith('http')) {
+                iconUrl = domain + '/' + iconUrl;
+            }
+            return iconUrl;
+        }
 
-        // 2. Look for PNGs (usually better than .ico)
-        const pngIcon = icons.find(url => url.toLowerCase().includes('.png'));
-        if (pngIcon) return pngIcon;
-
-        // 3. Fallback to the first one found
-        return icons[0];
+        // 5. Final Fallback: The standard root favicon
+        return `${domain}/favicon.ico`;
     } catch (error) {
-        console.error(`Icon fetch failed for ${siteUrl}:`, error);
-        return null;
+        console.error(`Icon scraper failed for ${siteUrl}:`, error);
+        // If the site blocks scraping, still return the root favicon guess
+        try {
+            return `${new URL(siteUrl).origin}/favicon.ico`;
+        } catch {
+            return null;
+        }
     }
 }
