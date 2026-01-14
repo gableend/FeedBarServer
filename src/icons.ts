@@ -12,14 +12,17 @@ export async function getBestIcon(siteUrl: string): Promise<string | null> {
         const $ = cheerio.load(response.data);
         let iconUrl: string | null = null;
 
-        const appleIcon = $('link[rel="apple-touch-icon"]').attr('href') || 
-                          $('link[rel="apple-touch-icon-precomposed"]').attr('href');
+        // Use ?? null to convert undefined (from .attr) into null
+        const appleIcon = ($('link[rel="apple-touch-icon"]').attr('href') || 
+                          $('link[rel="apple-touch-icon-precomposed"]').attr('href')) ?? null;
         
-        if (appleIcon) iconUrl = appleIcon;
+        if (appleIcon) {
+            iconUrl = appleIcon;
+        }
 
         if (!iconUrl) {
-            iconUrl = $('link[rel="icon"]').attr('href') || 
-                      $('link[rel="shortcut icon"]').attr('href');
+            iconUrl = ($('link[rel="icon"]').attr('href') || 
+                      $('link[rel="shortcut icon"]').attr('href')) ?? null;
         }
 
         if (iconUrl) {
