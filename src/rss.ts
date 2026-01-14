@@ -1,15 +1,26 @@
 import Parser from 'rss-parser';
 
-const parser = new Parser({
+// 1. Extend the Parser types so TypeScript stops complaining
+type CustomItem = { 
+    author?: string; 
+    creator?: string; 
+    mediaContent?: { $: { url: string } };
+    mediaThumbnail?: { $: { url: string } };
+    itemImage?: { url: string };
+    contentEncoded?: string;
+};
+type CustomFeed = {};
+
+const parser: Parser<CustomFeed, CustomItem> = new Parser({
     timeout: 5000,
     headers: { 'User-Agent': 'FeedBar-Server/1.0 (+https://feedbar.app)' },
-    // This is the crucial part: manually mapping non-standard RSS tags
     customFields: {
         item: [
             ['media:content', 'mediaContent'],
             ['media:thumbnail', 'mediaThumbnail'],
             ['image', 'itemImage'],
-            ['content:encoded', 'contentEncoded']
+            ['content:encoded', 'contentEncoded'],
+            ['author', 'author'] // Ensure author is explicitly mapped
         ],
     }
 });
@@ -28,31 +39,19 @@ export async function fetchFeed(url: string): Promise<CleanItem[] | null> {
         const feed = await parser.parseURL(url);
         
         return feed.items.map(item => {
-            // 1. Better Image Discovery Logic
+            // Logic for image extraction
             let image = item.enclosure?.url || null;
-            
-            // If no enclosure, check Media RSS (BBC/CNN style)
-            if (!image && (item as any).mediaContent) {
-                image = (item as any).mediaContent.$.url;
-            }
-            
-            // Check for thumbnails
-            if (!image && (item as any).mediaThumbnail) {
-                image = (item as any).mediaThumbnail.$.url;
-            }
-
-            // Check for direct image tag
-            if (!image && (item as any).itemImage) {
-                image = (item as any).itemImage.url;
-            }
+            if (!image && item.mediaContent) image = item.mediaContent.$.url;
+            if (!image && item.mediaThumbnail) image = item.mediaThumbnail.$.url;
+            if (!image && item.itemImage) image = item.itemImage.url;
 
             return {
                 title: item.title || 'Untitled',
                 url: item.link || '',
                 published_at: item.isoDate ? new Date(item.isoDate) : new Date(),
+                // Now TypeScript knows these might exist
                 author: item.creator || item.author || null,
-                // Use the full content if the snippet is empty
-                summary: item.contentSnippet || item.content || (item as any).contentEncoded || null,
+                summary: item.contentSnippet || item.content || item.contentEncoded || null,
                 image_url: image
             };
         }).filter(i => i.url !== '');
