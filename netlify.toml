@@ -6,9 +6,6 @@
 [functions]
   node_bundler = "esbuild"
 
-# This schedules your ingest to run every 10 minutes
+# Scheduled functions are now a native feature, no plugin required!
 [functions."ingest"]
   schedule = "*/10 * * * *"
-
-[[plugins]]
-  package = "@netlify/plugin-functions-core"
