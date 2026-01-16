@@ -1,14 +1,12 @@
 import { createClient } from '@supabase/supabase-js'
 
 export const handler = async (event: any, context: any) => {
-    // 1. Initialize Supabase (Node.js style)
     const supabaseUrl = process.env.SUPABASE_URL || ''
     const supabaseKey = process.env.SUPABASE_KEY || ''
     const supabase = createClient(supabaseUrl, supabaseKey)
 
     try {
-        // 2. Fetch Items (Articles) + Linked Feed Info
-        // Note: We access 'category' directly on 'feeds', matching your new DB schema
+        // 1. Fetch Items
         const { data: items, error } = await supabase
             .from('items')
             .select(`
@@ -29,21 +27,22 @@ export const handler = async (event: any, context: any) => {
 
         if (error) throw error;
 
+        // 2. Build Response
         const response = {
             generated_at: new Date().toISOString(),
+            
+            // ✅ RESTORED: This key is required by your iOS App Decoder
+            signals: [], 
+
             items: (items || []).map((i: any) => {
-                // Handle array vs object for relations
                 const feedInfo = Array.isArray(i.feeds) ? i.feeds[0] : i.feeds;
                 
-                // HOSTNAME EXTRACTION
                 let domain = 'news.source';
                 if (feedInfo?.url) {
                     try { domain = new URL(feedInfo.url).hostname.replace('www.', ''); } 
                     catch (e) { domain = 'source.com'; }
                 }
 
-                // CATEGORY PRIORITY:
-                // We use the direct column 'category' from the feeds table
                 const dbCategory = feedInfo?.category || null;
 
                 return {
@@ -53,7 +52,7 @@ export const handler = async (event: any, context: any) => {
                     feed_id: feedInfo?.id || '00000000-0000-0000-0000-000000000000', 
                     source_name: feedInfo?.name || 'General News',
                     source_domain: domain,
-                    category: dbCategory, // <--- Sends the real DB category to the Ticker
+                    category: dbCategory,
                     published_at: i.published_at,
                     image_url: i.image_url || null
                 };
@@ -64,7 +63,7 @@ export const handler = async (event: any, context: any) => {
             statusCode: 200,
             headers: { 
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*' // CORS support
+                'Access-Control-Allow-Origin': '*'
             },
             body: JSON.stringify(response)
         };
