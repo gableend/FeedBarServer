@@ -6,7 +6,6 @@ export const handler = async (event: any, context: any) => {
     const supabase = createClient(supabaseUrl, supabaseKey)
 
     try {
-        // 1. Fetch Items
         const { data: items, error } = await supabase
             .from('items')
             .select(`
@@ -27,12 +26,11 @@ export const handler = async (event: any, context: any) => {
 
         if (error) throw error;
 
-        // 2. Build Response
         const response = {
             generated_at: new Date().toISOString(),
             
-            // ✅ RESTORED: This key is required by your iOS App Decoder
-            signals: [], 
+            // ✅ FIXED: Changed from [] to {} to match Swift "Dictionary" expectation
+            signals: {}, 
 
             items: (items || []).map((i: any) => {
                 const feedInfo = Array.isArray(i.feeds) ? i.feeds[0] : i.feeds;
