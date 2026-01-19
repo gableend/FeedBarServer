@@ -2,18 +2,31 @@ import { schedule } from '@netlify/functions';
 import { createClient } from '@supabase/supabase-js';
 import { parse } from 'rss-to-json';
 
-// Helper to standardise fetching (RSS-to-JSON wrapper)
+// Helper to standardise fetching (RSS-to-JSON wrapper) with User-Agent spoofing
 const fetchFeed = async (url: string) => {
     try {
         // 5s timeout to prevent one slow feed from hanging the batch
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
         
-        const rss = await parse(url, { signal: controller.signal });
+        // ✅ FIX: Send headers to bypass 403/404 blocks from Bloomberg, etc.
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8'
+        };
+
+        // Note: rss-to-json allows passing fetch options as the second argument
+        const rss = await parse(url, { 
+            signal: controller.signal,
+            headers: headers
+        });
+        
         clearTimeout(timeout);
         return rss ? rss.items : [];
-    } catch (e: any) { // ✅ FIX: Added ': any' to resolve TS18046
-        console.warn(`Skipping ${url}:`, e?.message || String(e));
+    } catch (e: any) {
+        // Log specifically to help debug future blocks
+        const msg = e?.message || String(e);
+        console.warn(`Skipping ${url}: ${msg}`);
         return [];
     }
 };
@@ -45,7 +58,6 @@ export const handler = schedule('*/10 * * * *', async (event) => {
             const items = await fetchFeed(feed.url);
             
             if (items && items.length > 0) {
-                // Map to DB structure
                 const rows = items.map((i: any) => ({
                     feed_id: feed.id,
                     title: i.title || 'Untitled',
@@ -56,7 +68,6 @@ export const handler = schedule('*/10 * * * *', async (event) => {
                     image_url: i.enclosures?.[0]?.url || i.media?.thumbnail?.url || null
                 }));
 
-                // Upsert Items
                 const { error } = await supabase
                     .from('items')
                     .upsert(rows, { onConflict: 'url', ignoreDuplicates: true });
@@ -64,7 +75,7 @@ export const handler = schedule('*/10 * * * *', async (event) => {
                 if (error) console.error(`DB Error ${feed.url}:`, error.message);
             }
 
-            // 3. MARK AS DONE (Touch timestamp)
+            // 3. MARK AS DONE
             await supabase.from('feeds')
                 .update({ last_fetched_at: new Date().toISOString() })
                 .eq('id', feed.id);
@@ -74,7 +85,7 @@ export const handler = schedule('*/10 * * * *', async (event) => {
         }
     }));
 
-    // 4. FAST CLEANUP (Keep DB lean)
+    // 4. FAST CLEANUP
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
