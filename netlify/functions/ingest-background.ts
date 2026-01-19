@@ -1,32 +1,26 @@
 import { schedule } from '@netlify/functions';
 import { createClient } from '@supabase/supabase-js';
-import { parse } from 'rss-to-json';
+import Parser from 'rss-parser';
 
-// Helper to standardise fetching (RSS-to-JSON wrapper) with User-Agent spoofing
+// Initialize the robust parser
+const parser = new Parser({
+    timeout: 5000, // 5 second timeout
+    headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8'
+    }
+});
+
+// Helper to standardise fetching
 const fetchFeed = async (url: string) => {
     try {
-        // 5s timeout to prevent one slow feed from hanging the batch
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
-        
-        // ✅ FIX: Send headers to bypass 403/404 blocks from Bloomberg, etc.
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8'
-        };
-
-        // Note: rss-to-json allows passing fetch options as the second argument
-        const rss = await parse(url, { 
-            signal: controller.signal,
-            headers: headers
-        });
-        
-        clearTimeout(timeout);
-        return rss ? rss.items : [];
+        const feed = await parser.parseURL(url);
+        return feed.items || [];
     } catch (e: any) {
         // Log specifically to help debug future blocks
-        const msg = e?.message || String(e);
-        console.warn(`Skipping ${url}: ${msg}`);
+        // We trim the error to avoid massive log dumps
+        const msg = e.message || String(e);
+        console.warn(`Skipping ${url}: ${msg.substring(0, 100)}`);
         return [];
     }
 };
@@ -37,10 +31,10 @@ const supabase = createClient(
 );
 
 export const handler = schedule('*/10 * * * *', async (event) => {
-    console.log("⚡️ Batch Ingest started...");
+    console.log("⚡️ Batch Ingest started (rss-parser)...");
     
     // 1. SMART BATCHING
-    // Only grab the 10 "hungriest" feeds (oldest fetch time)
+    // Grab 10 feeds sorted by oldest fetch time
     const { data: feeds } = await supabase
         .from('feeds')
         .select('id, url')
@@ -58,24 +52,31 @@ export const handler = schedule('*/10 * * * *', async (event) => {
             const items = await fetchFeed(feed.url);
             
             if (items && items.length > 0) {
+                // Map to DB structure
                 const rows = items.map((i: any) => ({
                     feed_id: feed.id,
                     title: i.title || 'Untitled',
-                    url: i.link || i.url,
-                    published_at: i.published ? new Date(i.published).toISOString() : new Date().toISOString(),
+                    url: i.link || i.enclosure?.url || i.guid, // Robust URL finding
+                    published_at: i.isoDate ? new Date(i.isoDate).toISOString() : 
+                                  (i.pubDate ? new Date(i.pubDate).toISOString() : new Date().toISOString()),
                     // Clean summary (strip HTML tags)
-                    summary: (i.description || i.content || '').replace(/<[^>]*>?/gm, '').substring(0, 300),
-                    image_url: i.enclosures?.[0]?.url || i.media?.thumbnail?.url || null
+                    summary: (i.contentSnippet || i.content || i.summary || '').substring(0, 300),
+                    image_url: i.enclosure?.url || i.itunes?.image || null
                 }));
 
-                const { error } = await supabase
-                    .from('items')
-                    .upsert(rows, { onConflict: 'url', ignoreDuplicates: true });
-                
-                if (error) console.error(`DB Error ${feed.url}:`, error.message);
+                // Filter out invalid rows (missing URL or title)
+                const validRows = rows.filter((r: any) => r.url && r.title);
+
+                if (validRows.length > 0) {
+                    const { error } = await supabase
+                        .from('items')
+                        .upsert(validRows, { onConflict: 'url', ignoreDuplicates: true });
+                    
+                    if (error) console.error(`DB Error ${feed.url}:`, error.message);
+                }
             }
 
-            // 3. MARK AS DONE
+            // 3. MARK AS DONE (Touch timestamp)
             await supabase.from('feeds')
                 .update({ last_fetched_at: new Date().toISOString() })
                 .eq('id', feed.id);
@@ -85,7 +86,7 @@ export const handler = schedule('*/10 * * * *', async (event) => {
         }
     }));
 
-    // 4. FAST CLEANUP
+    // 4. FAST CLEANUP (Keep DB lean)
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
