@@ -1,7 +1,7 @@
 import { schedule } from '@netlify/functions';
 import { createClient } from '@supabase/supabase-js';
 import Parser from 'rss-parser';
-import fetch from 'node-fetch'; // Standard in Netlify Functions runtime
+// import fetch from 'node-fetch'; <--- REMOVED (Native Node 18+ fetch is global)
 
 // --------------------------------------------------------------------------
 // CONFIGURATION
@@ -47,7 +47,6 @@ const findImage = (item: any): string | null => {
 };
 
 // --- HELPER: SMART FAVICON FINDER (Server-Side Strategy) ---
-// Mimics your Swift "Clearbit -> DuckDuckGo" fallback logic
 const getSmartIconUrl = async (feedUrl: string): Promise<string> => {
     try {
         const urlObj = new URL(feedUrl);
@@ -56,7 +55,7 @@ const getSmartIconUrl = async (feedUrl: string): Promise<string> => {
         // 1. Try Clearbit (High Res / Official Logos)
         const clearbitUrl = `https://logo.clearbit.com/${domain}?size=128`;
         try {
-            // We must fetch to see if it exists (Clearbit returns 404 if unknown)
+            // Native fetch is available globally in Node 18+
             const res = await fetch(clearbitUrl);
             if (res.status === 200) {
                 return clearbitUrl;
@@ -176,9 +175,4 @@ export const handler = schedule('*/10 * * * *', async (event) => {
     }));
 
     // 3. Cleanup
-    const { count } = await supabase.from('items').delete({ count: 'exact' }).lt('published_at', cutoffDate.toISOString());
-    if (count && count > 0) console.log(`🧹 Cleanup: Removed ${count} items older than ${RETENTION_DAYS} days.`);
-    
-    console.log("✅ Batch complete.");
-    return { statusCode: 200 };
-});
+    const { count } = await supabase
