@@ -7,9 +7,9 @@ export const handler = async (event: any, context: any) => {
 
     try {
         const [itemsResult, sourcesResult] = await Promise.all([
-            // 1. ITEMS QUERY: Query the BALANCED VIEW instead of raw items
+            // 1. ITEMS QUERY: Query the WORKING VIEW
             supabase
-                .from('balanced_feed_items') // <--- CHANGED THIS
+                .from('v_manifest') // ✅ FIXED: Pointing to the correct view
                 .select(`
                     id, 
                     title, 
@@ -23,9 +23,8 @@ export const handler = async (event: any, context: any) => {
                         category
                     )
                 `)
-                .order('published_at', { ascending: false }), 
-                // No .limit() needed here because the View already limits per feed!
-                // But you can add .limit(5000) as a safety net if you have 200+ feeds.
+                .order('published_at', { ascending: false })
+                .limit(5000), // ✅ FIXED: Safety cap (covers all 139 feeds x 30 items)
 
             // 2. SOURCES QUERY
             supabase
