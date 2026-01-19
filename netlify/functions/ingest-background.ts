@@ -52,10 +52,9 @@ const getSmartIconUrl = async (feedUrl: string): Promise<string> => {
         const urlObj = new URL(feedUrl);
         const domain = urlObj.hostname.replace('www.', '');
 
-        // 1. Try Clearbit (High Res / Official Logos)
+        // 1. Try Clearbit (High Res / Official Logos) - Always HTTPS
         const clearbitUrl = `https://logo.clearbit.com/${domain}?size=128`;
         try {
-            // Native fetch is available globally in Node 18+
             const res = await fetch(clearbitUrl);
             if (res.status === 200) {
                 return clearbitUrl;
@@ -64,7 +63,7 @@ const getSmartIconUrl = async (feedUrl: string): Promise<string> => {
             // Network error to Clearbit, fall through
         }
 
-        // 2. Try DuckDuckGo (Robust Fallback - almost always returns something)
+        // 2. Try DuckDuckGo (Robust Fallback) - Always HTTPS
         return `https://icons.duckduckgo.com/ip3/${domain}.ico`;
     } catch (e) {
         return '';
@@ -82,12 +81,12 @@ const isFatalError = (err: any) => {
 };
 
 export const handler = schedule('*/10 * * * *', async (event) => {
-    console.log(`⚡️ Ingest started (Smart Icons + Images Mode)...`);
+    console.log(`⚡️ Ingest started (Self-Healing Mode)...`);
     
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - RETENTION_DAYS);
 
-    // 1. Get 10 feeds (Request icon_url to check if it's missing)
+    // 1. Get 10 feeds 
     const { data: feeds } = await supabase
         .from('feeds')
         .select('id, url, name, icon_url') 
@@ -102,12 +101,22 @@ export const handler = schedule('*/10 * * * *', async (event) => {
     // 2. Process Feeds
     await Promise.all(feeds.map(async (feed) => {
         try {
-            // --- 2a. AUTO-RESOLVE ICON (If missing) ---
+            // --- 2a. AUTO-RESOLVE ICON (If missing OR Insecure) ---
+            // This is the "Self-Healing" logic
+            let needsIconUpdate = false;
+            
             if (!feed.icon_url) {
-                const newIcon = await getSmartIconUrl(feed.url); // Now Async
+                needsIconUpdate = true;
+            } else if (feed.icon_url.startsWith('http:')) {
+                console.log(`⚠️ Detected insecure icon for ${feed.name}: ${feed.icon_url}`);
+                needsIconUpdate = true;
+            }
+
+            if (needsIconUpdate) {
+                const newIcon = await getSmartIconUrl(feed.url);
                 if (newIcon) {
                     await supabase.from('feeds').update({ icon_url: newIcon }).eq('id', feed.id);
-                    console.log(`🎨 Icon updated for ${feed.name}: ${newIcon}`);
+                    console.log(`🎨 Icon updated for ${feed.name} -> ${newIcon}`);
                 }
             }
 
@@ -129,7 +138,7 @@ export const handler = schedule('*/10 * * * *', async (event) => {
                     published_at: i.isoDate ? new Date(i.isoDate).toISOString() : 
                                   (i.pubDate ? new Date(i.pubDate).toISOString() : new Date().toISOString()),
                     summary: (i.contentSnippet || i.content || i.summary || '').substring(0, 300),
-                    image_url: findImage(i) // Hunt for thumbnail
+                    image_url: findImage(i)
                 }));
 
                 const validRows = rows.filter((r: any) => r.url && r.title);
