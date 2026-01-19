@@ -6,11 +6,10 @@ export const handler = async (event: any, context: any) => {
     const supabase = createClient(supabaseUrl, supabaseKey)
 
     try {
-        // Run both queries in parallel to keep the API fast
         const [itemsResult, sourcesResult] = await Promise.all([
-            // 1. ITEMS QUERY: The Content Stream
+            // 1. ITEMS QUERY: Query the BALANCED VIEW instead of raw items
             supabase
-                .from('items')
+                .from('balanced_feed_items') // <--- CHANGED THIS
                 .select(`
                     id, 
                     title, 
@@ -24,10 +23,11 @@ export const handler = async (event: any, context: any) => {
                         category
                     )
                 `)
-                .order('published_at', { ascending: false })
-                .limit(2000), // Reduced from 10k to prevent Netlify Function Timeout/Payload limits
+                .order('published_at', { ascending: false }), 
+                // No .limit() needed here because the View already limits per feed!
+                // But you can add .limit(5000) as a safety net if you have 200+ feeds.
 
-            // 2. SOURCES QUERY: The "Source of Truth" Configuration
+            // 2. SOURCES QUERY
             supabase
                 .from('feeds')
                 .select('id, name, url, category')
@@ -40,7 +40,7 @@ export const handler = async (event: any, context: any) => {
         const itemsData = itemsResult.data || [];
         const sourcesData = sourcesResult.data || [];
 
-        // Helper to extract domain
+        // Helper
         const getDomain = (url: string) => {
             try { return new URL(url).hostname.replace('www.', ''); } 
             catch (e) { return 'source.com'; }
@@ -49,17 +49,15 @@ export const handler = async (event: any, context: any) => {
         const response = {
             generated_at: new Date().toISOString(),
             
-            // ✅ THE NEW TRUTH: Explicit list of all available sources & categories
             sources: sourcesData.map((s: any) => ({
                 id: s.id,
                 name: s.name,
                 domain: getDomain(s.url),
                 category: s.category || 'General',
                 url: s.url,
-                default_enabled: true // You can add a DB column for this later if needed
+                default_enabled: true 
             })),
 
-            // The Stream
             items: itemsData.map((i: any) => {
                 const feedInfo = Array.isArray(i.feeds) ? i.feeds[0] : i.feeds;
                 
