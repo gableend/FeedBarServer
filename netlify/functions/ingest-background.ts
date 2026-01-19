@@ -12,8 +12,8 @@ const fetchFeed = async (url: string) => {
         const rss = await parse(url, { signal: controller.signal });
         clearTimeout(timeout);
         return rss ? rss.items : [];
-    } catch (e) {
-        console.warn(`Skipping ${url}:`, e.message);
+    } catch (e: any) { // ✅ FIX: Added ': any' to resolve TS18046
+        console.warn(`Skipping ${url}:`, e?.message || String(e));
         return [];
     }
 };
@@ -28,20 +28,18 @@ export const handler = schedule('*/10 * * * *', async (event) => {
     
     // 1. SMART BATCHING
     // Only grab the 10 "hungriest" feeds (oldest fetch time)
-    // This rotates through your whole list automatically every 10 mins.
     const { data: feeds } = await supabase
         .from('feeds')
         .select('id, url')
         .eq('is_active', true)
-        .order('last_fetched_at', { ascending: true, nullsFirst: true }) // Nulls first ensures new feeds get priority
-        .limit(10); // ✅ LIMIT 10 prevents timeouts
+        .order('last_fetched_at', { ascending: true, nullsFirst: true }) 
+        .limit(10); 
         
     if (!feeds?.length) return { statusCode: 200 };
 
     console.log(`Processing Batch of ${feeds.length} feeds...`);
 
     // 2. PARALLEL EXECUTION
-    // Process all 10 at once. Takes ~2-3 seconds total instead of 20s.
     await Promise.all(feeds.map(async (feed) => {
         try {
             const items = await fetchFeed(feed.url);
@@ -67,7 +65,6 @@ export const handler = schedule('*/10 * * * *', async (event) => {
             }
 
             // 3. MARK AS DONE (Touch timestamp)
-            // Critical: This moves them to the back of the queue for the next run
             await supabase.from('feeds')
                 .update({ last_fetched_at: new Date().toISOString() })
                 .eq('id', feed.id);
@@ -78,7 +75,6 @@ export const handler = schedule('*/10 * * * *', async (event) => {
     }));
 
     // 4. FAST CLEANUP (Keep DB lean)
-    // Only keep last 7 days to keep query speeds high
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
