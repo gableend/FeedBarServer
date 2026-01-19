@@ -16,14 +16,8 @@ const supabase = createClient(
     process.env.SUPABASE_KEY || ''
 );
 
-// Helper to determine if an error is "Fatal" (Should disable the feed)
 const isFatalError = (err: any) => {
     const msg = (err.message || String(err)).toLowerCase();
-    // 404: Not Found (Dead Link)
-    // 403: Forbidden (Firewall/Block)
-    // 410: Gone (Deleted)
-    // "non-whitespace": XML Parsing Error (Bad Format)
-    // "strict mode": XML Namespace Error
     return msg.includes('status code 404') || 
            msg.includes('status code 403') || 
            msg.includes('status code 410') ||
@@ -33,12 +27,12 @@ const isFatalError = (err: any) => {
 };
 
 export const handler = schedule('*/10 * * * *', async (event) => {
-    console.log("⚡️ Smart Ingest started...");
+    console.log("⚡️ Aggressive Ingest started...");
     
     // 1. Get 10 feeds
     const { data: feeds } = await supabase
         .from('feeds')
-        .select('id, url, name') // Added name for logging
+        .select('id, url, name') 
         .eq('is_active', true)
         .order('last_fetched_at', { ascending: true, nullsFirst: true }) 
         .limit(10); 
@@ -73,22 +67,41 @@ export const handler = schedule('*/10 * * * *', async (event) => {
                         .from('items')
                         .upsert(validRows, { onConflict: 'url', ignoreDuplicates: true });
                 }
-            }
 
-            // Mark as Healthy (Touch timestamp)
-            await supabase.from('feeds')
-                .update({ last_fetched_at: new Date().toISOString() })
-                .eq('id', feed.id);
+                // Mark as Healthy
+                await supabase.from('feeds')
+                    .update({ last_fetched_at: new Date().toISOString() })
+                    .eq('id', feed.id);
+            } 
+            // --- EMPTY PATH (New Aggressive Triage) ---
+            else {
+                console.warn(`💀 EMPTY: Disabling ${feed.name} (0 items returned).`);
+                
+                // 1. Log to Triage
+                await supabase.from('feed_errors').insert({
+                    feed_id: feed.id,
+                    feed_name: feed.name,
+                    feed_url: feed.url,
+                    error_code: 'NO_ITEMS',
+                    error_message: 'Feed returned 0 items (Soft Fail or Empty)'
+                });
+
+                // 2. Kill the Feed
+                await supabase.from('feeds')
+                    .update({ 
+                        is_active: false, 
+                        last_fetched_at: new Date().toISOString() 
+                    })
+                    .eq('id', feed.id);
+            }
 
         } catch (err: any) {
             // --- FAILURE PATH ---
             const errorMsg = err.message || String(err);
-            console.warn(`Failed ${feed.name}: ${errorMsg.substring(0, 50)}`);
-
+            
             if (isFatalError(err)) {
                 console.error(`💀 FATAL: Disabling ${feed.name} due to hard error.`);
                 
-                // 1. Log to Triage Table
                 await supabase.from('feed_errors').insert({
                     feed_id: feed.id,
                     feed_name: feed.name,
@@ -97,15 +110,14 @@ export const handler = schedule('*/10 * * * *', async (event) => {
                     error_message: errorMsg
                 });
 
-                // 2. Disable Feed (Soft Delete)
                 await supabase.from('feeds')
                     .update({ 
                         is_active: false, 
-                        last_fetched_at: new Date().toISOString() // Push to back of queue anyway
+                        last_fetched_at: new Date().toISOString()
                     })
                     .eq('id', feed.id);
             } else {
-                // Temporary Error (500, Timeout) - Just touch timestamp to retry later
+                // Temporary Error (500, Timeout) - Just touch timestamp
                  await supabase.from('feeds')
                     .update({ last_fetched_at: new Date().toISOString() })
                     .eq('id', feed.id);
@@ -113,14 +125,11 @@ export const handler = schedule('*/10 * * * *', async (event) => {
         }
     }));
 
-    // 3. Fast Cleanup
+    // 3. Cleanup
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
-    await supabase
-        .from('items')
-        .delete()
-        .lt('published_at', sevenDaysAgo.toISOString());
+    await supabase.from('items').delete().lt('published_at', sevenDaysAgo.toISOString());
 
     console.log("✅ Batch complete.");
     return { statusCode: 200 };
